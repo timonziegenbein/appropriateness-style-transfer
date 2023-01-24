@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 import random
 import warnings
@@ -31,10 +32,10 @@ DIMS = [
     'Commitment',
     'Committed Seriousness',
     'Committed Openness',
-    'Clarity',
-    'Clear Position',
-    'Clear Relevance',
-    'Clear Organization',
+    'Intelligibility',
+    'Intelligible Position',
+    'Intelligible Relevance',
+    'Intelligible Organization',
     'Other',
     'Orthography',
     'Not classified'
@@ -188,6 +189,7 @@ def parse_args():
     parser.add_argument("--input", type=str, required=True)
     parser.add_argument("--issue", dest='issue', action='store_true', default=False, required=False)
     parser.add_argument("--shuffle", dest='shuffle', action='store_true', default=False, required=False)
+    parser.add_argument("--fix_predictions", dest='fix_predictions', action='store_true', default=False, required=False)
 
     return parser.parse_args()
 
@@ -201,7 +203,7 @@ def seed_everything(seed: int):
     torch.backends.cudnn.benchmark = True
     
 def model_init(df):
-    model = AppropriatenessMultilabelModel.from_pretrained("roberta-large", num_labels=len(DIMS), problem_type="multi_label_classification")
+    model = AppropriatenessMultilabelModel.from_pretrained('roberta-large', num_labels=len(DIMS), problem_type="multi_label_classification")
     model.pos_weights = torch.Tensor(calc_label_weights(df)).cuda()
     return model
 
@@ -209,17 +211,87 @@ def calc_label_weights(df):
     pos_weights=[]
     for dim_value in df[df["fold{}.{}".format(args.repeat, args.fold)]=='TRAIN'][DIMS].values.T:
         pos_weight = (dim_value==0.).sum()/dim_value.sum()
-        pos_weights.append(pos_weight)
+        # handle cases where a class has only one label
+        if 1 <= pos_weight < math.inf: 
+            pos_weights.append(pos_weight)
+        else:
+            pos_weights.append(1)
     return pos_weights
 
-def compute_metrics(eval_pred):
+def compute_metrics(fix_predictions, eval_pred):
     logits, labels = eval_pred
-    predictions = torch.round(torch.sigmoid(torch.from_numpy(logits))).numpy()
-    
-    print(predictions.shape)
+    probabilities = torch.sigmoid(torch.from_numpy(logits))
+    predictions = torch.round(probabilities).numpy()
+    probabilities = probabilities.numpy()
     if fix_predictions:
-        for prediction in predictions:
-            pass
+        for i, prediction in enumerate(predictions):
+            tmp_prediction = np.zeros_like(prediction) 
+            if prediction[DIMS.index('Appropriateness')] != 0:
+                tmp_prediction[DIMS.index('Appropriateness')] = 1
+                
+                if prediction[DIMS.index('Emotions')] != 0:
+                    tmp_prediction[DIMS.index('Emotions')] = 1
+                    if prediction[DIMS.index('Emotional Intensity')] + prediction[DIMS.index('Emotional Typology')] == 0:
+                       max_class = np.argmax([probabilities[i][DIMS.index('Emotional Intensity')], probabilities[i][DIMS.index('Emotional Typology')]]) 
+                       if max_class == 0:
+                           tmp_prediction[DIMS.index('Emotional Intensity')] = 1
+                           tmp_prediction[DIMS.index('Emotional Typology')] = 0
+                       else:
+                           tmp_prediction[DIMS.index('Emotional Intensity')] = 0
+                           tmp_prediction[DIMS.index('Emotional Typology')] = 1 
+                    else:
+                        tmp_prediction[DIMS.index('Emotional Intensity')] = prediction[DIMS.index('Emotional Intensity')]
+                        tmp_prediction[DIMS.index('Emotional Typology')] = prediction[DIMS.index('Emotional Typology')]
+                
+                if prediction[DIMS.index('Commitment')] != 0:
+                    tmp_prediction[DIMS.index('Commitment')] = 1
+                    if prediction[DIMS.index('Committed Seriousness')] + prediction[DIMS.index('Committed Openness')] == 0:
+                       max_class = np.argmax([probabilities[i][DIMS.index('Committed Seriousness')], probabilities[i][DIMS.index('Committed Openness')]]) 
+                       if max_class == 0:
+                           tmp_prediction[DIMS.index('Committed Seriousness')] = 1
+                           tmp_prediction[DIMS.index('Committed Openness')] = 0
+                       else:
+                           tmp_prediction[DIMS.index('Committed Seriousness')] = 0
+                           tmp_prediction[DIMS.index('Committed Openness')] = 1 
+                    else:
+                        tmp_prediction[DIMS.index('Committed Seriousness')] = prediction[DIMS.index('Committed Seriousness')]
+                        tmp_prediction[DIMS.index('Committed Openness')] = prediction[DIMS.index('Committed Openness')]
+
+                if prediction[DIMS.index('Intelligibility')] != 0:
+                    tmp_prediction[DIMS.index('Intelligibility')] = 1
+                    if prediction[DIMS.index('Intelligible Position')] + prediction[DIMS.index('Intelligible Relevance')] + prediction[DIMS.index('Intelligible Organization')] == 0:
+                       max_class = np.argmax([probabilities[i][DIMS.index('Intelligible Position')], probabilities[i][DIMS.index('Intelligible Relevance')], prediction[DIMS.index('Intelligible Organization')]]) 
+                       if max_class == 0:
+                           tmp_prediction[DIMS.index('Intelligible Position')] = 1
+                           tmp_prediction[DIMS.index('Intelligible Relevance')] = 0
+                           tmp_prediction[DIMS.index('Intelligible Organization')] = 0
+                       elif max_class == 1:
+                           tmp_prediction[DIMS.index('Intelligible Position')] = 0
+                           tmp_prediction[DIMS.index('Intelligible Relevance')] = 1 
+                           tmp_prediction[DIMS.index('Intelligible Organization')] = 0
+                       else:
+                           tmp_prediction[DIMS.index('Intelligible Position')] = 0
+                           tmp_prediction[DIMS.index('Intelligible Relevance')] = 0 
+                           tmp_prediction[DIMS.index('Intelligible Organization')] = 1
+                    else:
+                        tmp_prediction[DIMS.index('Intelligible Position')] = prediction[DIMS.index('Intelligible Position')]
+                        tmp_prediction[DIMS.index('Intelligible Relevance')] = prediction[DIMS.index('Intelligible Relevance')]
+                        tmp_prediction[DIMS.index('Intelligible Organization')] = prediction[DIMS.index('Intelligible Organization')]
+
+                if prediction[DIMS.index('Other')] != 0:
+                    tmp_prediction[DIMS.index('Other')] = 1
+                    if prediction[DIMS.index('Orthography')] + prediction[DIMS.index('Not classified')] == 0:
+                       max_class = np.argmax([probabilities[i][DIMS.index('Orthography')], probabilities[i][DIMS.index('Not classified')]]) 
+                       if max_class == 0:
+                           tmp_prediction[DIMS.index('Orthography')] = 1
+                           tmp_prediction[DIMS.index('Not classified')] = 0
+                       else:
+                           tmp_prediction[DIMS.index('Orthography')] = 0
+                           tmp_prediction[DIMS.index('Not classified')] = 1 
+                    else:
+                        tmp_prediction[DIMS.index('Orthography')] = prediction[DIMS.index('Orthography')]
+                        tmp_prediction[DIMS.index('Not classified')] = prediction[DIMS.index('Not classified')]
+            predictions[i] = tmp_prediction
 
     out_dict = {}
     prec = 0
@@ -267,10 +339,10 @@ if __name__ == "__main__":
     eval_steps=250,
     save_steps=250,
     load_best_model_at_end=True,
-    num_train_epochs=10,
+    num_train_epochs=20,
     max_steps=-1,
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
     weight_decay=0.1,
     logging_dir=os.path.join(args.output, f"fold{args.repeat}.{args.fold}")+'/logs',
     skip_memory_metrics=True,
@@ -288,11 +360,12 @@ if __name__ == "__main__":
         data_collator=Collate(tokenizer=tokenizer),
         tokenizer=tokenizer,
         model_init=partial(model_init, df),
-        compute_metrics=compute_metrics
+        compute_metrics=partial(compute_metrics, args.fix_predictions)
     )
     
-    #trainer.train()
+    trainer.train()
     trainer.eval_dataset = test_dataset
     metrics = trainer.evaluate()
     trainer.log_metrics("test", metrics)
-    #trainer.save_metrics("test", metrics)
+    trainer.save_metrics("test", metrics)
+
